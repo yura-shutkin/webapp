@@ -2,8 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"github.com/tcnksm/go-httpstat"
 	"html/template"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -22,6 +26,49 @@ type data struct {
 	Hosts []host
 	Error string
 }
+
+var (
+	dnsLookup = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "webapp",
+			Name:      "dnsLookup",
+			Help:      "Time spend to lookup DNS record",
+		},
+		[]string{"addr", "code"},
+	)
+	tcpConnection = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "webapp",
+			Name:      "tcpConnection",
+			Help:      "Time spend to connect",
+		},
+		[]string{"addr", "code"},
+	)
+	serverProcessing = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "webapp",
+			Name:      "serverProcessing",
+			Help:      "Time spend on wait of response",
+		},
+		[]string{"addr", "code"},
+	)
+	contentTransfer = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "webapp",
+			Name:      "contentTransfer",
+			Help:      "Time spend on waiting data from server",
+		},
+		[]string{"addr", "code"},
+	)
+	responseCodesFromHosts = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "webapp",
+			Name:      "responseCodesFromHosts",
+			Help:      "Response codes from hosts",
+		},
+		[]string{"addr", "code"},
+	)
+)
 
 func generateData() map[string]map[string]string {
 	vars := map[string]map[string]string{
@@ -173,15 +220,39 @@ func httpQueryToHosts() data {
 
 		for _, hostAddr := range hosts {
 			code := "0"
-			resp, respErr := http.Get(hostAddr)
+			req, respErr := http.NewRequest("GET", hostAddr, nil)
 			if respErr != nil {
 				log.WithFields(log.Fields{
 					"Error": respErr,
 				}).Error()
-			} else {
-				code = strconv.Itoa(resp.StatusCode)
 			}
 
+			var result httpstat.Result
+			ctx := httpstat.WithHTTPStat(req.Context(), &result)
+			req = req.WithContext(ctx)
+			// Send request by default HTTP client
+			client := http.DefaultClient
+			res, err := client.Do(req)
+			if err != nil {
+				log.Error(err)
+			} else {
+				code = strconv.Itoa(res.StatusCode)
+				if _, err := io.Copy(ioutil.Discard, res.Body); err != nil {
+					log.Error(err)
+				}
+				err := res.Body.Close()
+				if err != nil {
+					log.Errorf("Can not close response body %v", err)
+				}
+				end := time.Now()
+
+				dnsLookup.With(prometheus.Labels{"addr": hostAddr, "code": code}).Observe(float64(result.DNSLookup / time.Millisecond))
+				tcpConnection.With(prometheus.Labels{"addr": hostAddr, "code": code}).Observe(float64(result.TCPConnection / time.Millisecond))
+				serverProcessing.With(prometheus.Labels{"addr": hostAddr, "code": code}).Observe(float64(result.ServerProcessing / time.Millisecond))
+				contentTransfer.With(prometheus.Labels{"addr": hostAddr, "code": code}).Observe(float64(result.ContentTransfer(end) / time.Millisecond))
+			}
+
+			responseCodesFromHosts.With(prometheus.Labels{"addr": hostAddr, "code": code}).Inc()
 			response.Hosts = append(response.Hosts, host{hostAddr, code})
 
 			log.WithFields(log.Fields{
@@ -227,18 +298,38 @@ func main() {
 		listenAddr = "0.0.0.0:8080"
 	}
 
+	httpCheckPeriod := time.Duration(5) * time.Second
+	httpCheckPeriodStr := os.Getenv("HTTP_CHECK_PERIOD")
+	if httpCheckPeriodStr != "" {
+		parsedInt, err := strconv.ParseInt(httpCheckPeriodStr, 0, 32)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"Error": err,
+			}).Error()
+		}
+		httpCheckPeriod = time.Duration(parsedInt) * time.Second
+	}
+	log.Infof("Will check http hosts every %s", httpCheckPeriod)
+
+	prometheus.MustRegister(dnsLookup)
+	prometheus.MustRegister(tcpConnection)
+	prometheus.MustRegister(serverProcessing)
+	prometheus.MustRegister(contentTransfer)
+	prometheus.MustRegister(responseCodesFromHosts)
+
 	go func() {
 		for true {
 			log.Info("Start regular checks to HTTP hosts")
 			httpQueryToHosts()
-			time.Sleep(5 * time.Second)
+			time.Sleep(httpCheckPeriod)
 		}
 	}()
 
-	log.Infof("Server is starting on: %v", listenAddr)
+	log.Infof("HTTP server is starting on: %v", listenAddr)
 	http.HandleFunc("/", renderHtml)
 	http.HandleFunc("/json", jsonEnvs)
 	http.HandleFunc("/ping", ping)
 	http.HandleFunc("/net-check", checkServices)
+	http.Handle("/metrics", promhttp.Handler())
 	_ = http.ListenAndServe(listenAddr, nil)
 }
