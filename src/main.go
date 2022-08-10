@@ -164,10 +164,10 @@ func jsonEnvs(w http.ResponseWriter, r *http.Request) {
 func httpQueryToHosts() data {
 	var response data
 
-	hostsList := os.Getenv("HOSTS")
+	hostsList := os.Getenv("HTTP_HOSTS")
 	if hostsList == "" {
-		log.Warning("Variable HOSTS is empty, should be list. Can not proceed http queries to hosts check")
-		response.Error = "Variable HOSTS is empty, should be list"
+		log.Warning("Variable HTTP_HOSTS is empty, should be list. Can not proceed http queries to hosts check")
+		response.Error = "Variable HTTP_HOSTS is empty, should be list"
 	} else {
 		hosts := strings.Split(hostsList, ";")
 
