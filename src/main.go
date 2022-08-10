@@ -10,7 +10,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+type host struct {
+	Addr string
+	Code string
+}
+
+type data struct {
+	Hosts []host
+	Error string
+}
 
 func generateData() map[string]map[string]string {
 	vars := map[string]map[string]string{
@@ -116,7 +127,10 @@ func ping(w http.ResponseWriter, r *http.Request) {
 		}).Error()
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonData)
+	_, wErr := w.Write(jsonData)
+	if wErr != nil {
+		log.Errorf("An error occured: %s", wErr)
+	}
 
 	log.WithFields(log.Fields{
 		"Method":      r.Method,
@@ -135,7 +149,10 @@ func jsonEnvs(w http.ResponseWriter, r *http.Request) {
 		}).Error()
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonData)
+	_, wErr := w.Write(jsonData)
+	if wErr != nil {
+		log.Errorf("An error occured: %s", wErr)
+	}
 
 	log.WithFields(log.Fields{
 		"Method":      r.Method,
@@ -144,21 +161,12 @@ func jsonEnvs(w http.ResponseWriter, r *http.Request) {
 	}).Info()
 }
 
-func checkServices(w http.ResponseWriter, r *http.Request) {
-	type host struct {
-		Addr string
-		Code string
-	}
-
-	type data struct {
-		Hosts []host
-		Error string
-	}
-
+func httpQueryToHosts() data {
 	var response data
 
 	hostsList := os.Getenv("HOSTS")
 	if hostsList == "" {
+		log.Warning("Variable HOSTS is empty, should be list. Can not proceed http queries to hosts check")
 		response.Error = "Variable HOSTS is empty, should be list"
 	} else {
 		hosts := strings.Split(hostsList, ";")
@@ -183,6 +191,12 @@ func checkServices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	return response
+}
+
+func checkServices(w http.ResponseWriter, r *http.Request) {
+	response := httpQueryToHosts
+
 	jsonData, dataMarshallErr := json.Marshal(response)
 	if dataMarshallErr != nil {
 		log.WithFields(log.Fields{
@@ -191,7 +205,10 @@ func checkServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonData)
+	_, wErr := w.Write(jsonData)
+	if wErr != nil {
+		log.Errorf("An error occured: %s", wErr)
+	}
 
 	log.WithFields(log.Fields{
 		"Method":      r.Method,
@@ -207,8 +224,16 @@ func main() {
 
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
-		listenAddr = "localhost:8080"
+		listenAddr = "0.0.0.0:8080"
 	}
+
+	go func() {
+		for true {
+			log.Info("Start regular checks to HTTP hosts")
+			httpQueryToHosts()
+			time.Sleep(5 * time.Second)
+		}
+	}()
 
 	log.Infof("Server is starting on: %v", listenAddr)
 	http.HandleFunc("/", renderHtml)
