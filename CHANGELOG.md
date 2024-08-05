@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.7.1] - 2024-08-04
+### Changed
+- GO image updated from 1.18.2-alpine to 1.22.5
+- Redo docker build and publish to solve exec error on different platform
+- README was rewritten
+
+### Added
+- Help goal in makefile
+- Alpine based docker image. To allow exec into the webapp container.
+
+### Removed
+- User creation in scratch image
+- Ubuntu based docker image. Because multiplatform build did not work
+
 ## [1.7.0] - 2022-08-10
 ### Added
 - Env variable `HTTP_CHECK_PERIOD` to specify period of HTTP checks. Default 5 sec
